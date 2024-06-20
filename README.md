@@ -1,3 +1,8 @@
+![CI](https://github.com/swiftDevelopmentPackages/wheel/actions/workflows/swift.yml/badge.svg?branch=main)
+![iOS](https://img.shields.io/badge/iOS-16.0-blue)
+![macOS](https://img.shields.io/badge/macOS-11.0-blue)
+
+
 # wheel
 Yet another wheel. Reinvented.
 
