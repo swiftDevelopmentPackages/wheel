@@ -105,6 +105,108 @@ class HTTPServiceTests: XCTestCase {
       XCTFail("Expected no response error")
     }
   }
+
+  func testApplyCommonHeadersWithoutAuthentication() async {
+    var request = MockRequest()
+    request.headers = ["test": "value"]
+    mockSession.dataResult = (Data(), HTTPURLResponse())
+
+    do {
+      try? await sut.request(authenticated: false, requestConfig: request)
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "cache-control"), "no-cache")
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "test"), "value")
+    }
+  }
+
+  func testApplyCommonHeadersWithAuthentication() async {
+    mockSession.dataResult = (Data(), HTTPURLResponse())
+    do {
+      let _: EmptyResponse = try await sut.request(authenticated: true, requestConfig: MockRequest())
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "cache-control"), "no-cache")
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "Authorization"), "Bearer mock_token")
+    } catch {
+      XCTFail("Expected successful request with token presence")
+    }
+  }
+
+  func testAddAuthenticationHeadersWithTokensPresent() async {
+    mockTokenStorage.accessToken = "accessToken"
+    mockTokenStorage.refreshToken = "refreshToken"
+    mockSession.dataResult = (Data(), HTTPURLResponse())
+
+    do {
+      let _: EmptyResponse = try await sut.request(authenticated: true, requestConfig: MockRequest())
+      XCTAssertEqual(mockSession.requestUnderTest?.value(forHTTPHeaderField: "Authorization"), "Bearer accessToken")
+    } catch {
+      XCTFail("Expected successful request with token presence")
+    }
+  }
+
+  func testAddAuthenticationHeadersWithMissingRefreshToken() async {
+    mockTokenStorage.accessToken = nil
+    mockTokenStorage.refreshToken = nil
+    mockSession.dataResult = (Data(), HTTPURLResponse())
+
+    do {
+      try await sut.request(authenticated: true, requestConfig: MockRequest())
+    } catch NetworkingError.unauthorized {
+      XCTAssertTrue(mockTokenStorage.wipeTokensCalled)
+    } catch {
+      XCTFail("Expected unauthorized error")
+    }
+  }
+
+  func testRequestDecodableWithSuccessResponse() async throws {
+    let requestConfig = MockRequest()
+    let mockResponse = HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+    mockSession.dataResult = (Data(), mockResponse)
+
+    do {
+      let _: EmptyResponse = try await sut.request(authenticated: true, requestConfig: requestConfig)
+      XCTAssertTrue(mockSession.callCount == 1)
+    } catch {
+      XCTFail("Expected successful decoding of EmptyResponse")
+    }
+  }
+
+  func testRequestDecodableWithErrorResponse() async throws {
+    let requestConfig = MockRequest()
+    let mockResponse = HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: 404, httpVersion: nil, headerFields: nil)!
+    mockSession.dataResult = (Data(), mockResponse)
+
+    do {
+      let _: EmptyResponse = try await sut.request(authenticated: true, requestConfig: requestConfig)
+      XCTFail("Expected error response")
+    } catch NetworkingError.invalidErrorBody {
+      // Success
+    } catch {
+      XCTFail("Expected not found error")
+    }
+  }
+
+  func testRequestDecodableWithServerErrorResponse() async throws {
+    let requestConfig = MockRequest()
+    let jsonData = """
+    {
+      "error": "server error",
+      "domainCode": 3
+    }
+    """.data(using: .utf8)!
+    let mockResponse = HTTPURLResponse(url: URL(string: "https://example.com")!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+    mockSession.dataResult = (jsonData, mockResponse)
+
+    do {
+      let _: EmptyResponse = try await sut.request(authenticated: true, requestConfig: requestConfig)
+      XCTFail("Expected server error response")
+    } catch NetworkingError.api(domainErrorMessage: "server error",
+                                statusCode: 500,
+                                domainCode: .AppRequiresUpdate) {
+    } catch {
+      XCTFail("Expected server error")
+    }
+  }
 }
 
 class MockURLSession: URLSessionProtocol {
@@ -112,8 +214,10 @@ class MockURLSession: URLSessionProtocol {
   var error: Error?
   var callCount = 0
   var dataForRequestCalledCompletion: (() -> Void)?
+  var requestUnderTest: URLRequest?
 
   func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+    requestUnderTest = request
     callCount += 1
     dataForRequestCalledCompletion?()
     if let error = error {
